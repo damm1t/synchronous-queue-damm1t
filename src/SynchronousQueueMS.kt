@@ -1,4 +1,3 @@
-import java.lang.Error
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
@@ -28,39 +27,26 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
         val node = Node(element, NodeType.SENDER)
         while (true) {
             val curTail = tail.get()
-            var curHead = head.get()
+            val curHead = head.get()
             if (curHead == curTail || curTail.type == NodeType.SENDER) {
-                val next = curTail.next.get()
-                if (curTail == tail.get()) {
-                    if (next != null) {
-                        tail.compareAndSet(curTail, next)
-                        continue
+                val res = suspendCoroutine<Boolean> sc@{ cont ->
+                    node.cont = cont
+                    if (curTail.next.compareAndSet(null, node)) {
+                        tail.compareAndSet(curTail, node)
+                    } else {
+                        cont.resume(false)
+                        return@sc
                     }
-
-                    val res = suspendCoroutine<Boolean> sc@{ cont ->
-                        node.cont = cont
-                        if (!curTail.next.compareAndSet(next, node)) {
-                            cont.resume(false)
-                            return@sc
-                        }
-
-                    }
-
-                    if (res) {
-                        this.tail.compareAndSet(curTail, node)
-                        curHead = head.get()
-                        if (node == curHead.next.get()) {
-                            head.compareAndSet(curHead, node)
-                        }
-                        return
-                    }
+                }
+                if (res) {
+                    return
                 }
             } else {
                 val next = curHead.next.get()
-                if (curTail != tail.get() || curHead != head.get() || next == null) {
+                if (curTail != tail.get() || curHead != head.get() || curHead == tail.get() || next == null) {
                     continue
                 }
-                if (next.cont !== null && head.compareAndSet(curHead, next)) {
+                if (next.cont !== null && next.type == NodeType.GETTER && head.compareAndSet(curHead, next)) {
                     next.data.compareAndSet(null, element)
                     next.cont!!.resume(true)
                     return
@@ -74,40 +60,28 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
 
         while (true) {
             val curTail = tail.get()
-            var curHead = head.get()
+            val curHead = head.get()
             if (curHead == curTail || curTail.type == NodeType.GETTER) {
-                val next = curTail.next.get()
-                if (curTail == tail.get()) {
-                    if (next != null) {
-                        tail.compareAndSet(curTail, next)
-                        continue
-                    }
+                val res = suspendCoroutine<Boolean> sc@{ cont ->
+                    node.cont = cont
+                    if (curTail.next.compareAndSet(null, node)) {
+                        tail.compareAndSet(curTail, node)
 
-                    val res = suspendCoroutine<Boolean> sc@{ cont ->
-                        node.cont = cont
-                        if (!curTail.next.compareAndSet(next, node)) {
-                            cont.resume(false)
-                            return@sc
-                        }
-
+                    } else {
+                        cont.resume(false)
+                        return@sc
                     }
-
-                    if (res) {
-                        this.tail.compareAndSet(curTail, node)
-                        curHead = head.get()
-                        if (node == curHead.next.get()) {
-                            head.compareAndSet(curHead, node)
-                        }
-                        return node.data.get()!!
-                    }
+                }
+                if (res) {
+                    return node.data.get()!!
                 }
             } else {
                 val next = curHead.next.get()
-                if (curTail != tail.get() || curHead != head.get() || next == null) {
+                if (curHead == tail.get() || curTail != tail.get() || curHead != head.get() || next == null) {
                     continue
                 }
                 val element = next.data.get() ?: continue
-                if (next.cont !== null && head.compareAndSet(curHead, next)) {
+                if (next.cont !== null && next.type == NodeType.SENDER && head.compareAndSet(curHead, next)) {
                     next.data.compareAndSet(element, null)
                     next.cont!!.resume(true)
                     return element
