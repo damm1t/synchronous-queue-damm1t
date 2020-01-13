@@ -1,3 +1,4 @@
+import java.lang.Error
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
@@ -8,7 +9,7 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
     private enum class NodeType { SENDER, GETTER }
 
     private class Node<T>(data: T?, val type: NodeType) {
-        var cont: Continuation<Boolean>? = null
+        var cont: AtomicReference<Continuation<Boolean>?> = AtomicReference(null)
         var data = AtomicReference(data)
         var next: AtomicReference<Node<T>?> = AtomicReference(null)
     }
@@ -37,7 +38,7 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
                     val node = Node(element, NodeType.SENDER)
 
                     val result = suspendCoroutine<Boolean> sc@{ cont ->
-                        node.cont = cont
+                        node.cont = AtomicReference(cont)
                         if (!curTail.next.compareAndSet(next, node)) {
                             cont.resume(false)
                             return@sc
@@ -57,9 +58,10 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
                 if (curTail != tail.get() || curHead != head.get() || next == null) {
                     continue
                 }
+                val succ = next.data.compareAndSet(null, element)
                 head.compareAndSet(curHead, next)
-                if (next.data.compareAndSet(null, element)) {
-                    next.cont!!.resume(true)
+                if (succ) {
+                    next.cont.get()!!.resume(true)
                     return
                 }
             }
@@ -79,7 +81,7 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
                     }
                     val node: Node<E> = Node(null, NodeType.GETTER)
                     val result = suspendCoroutine<Boolean> sc@{ cont ->
-                        node.cont = cont
+                        node.cont = AtomicReference(cont)
                         if (!curTail.next.compareAndSet(next, node)) {
                             cont.resume(false)
                             return@sc
@@ -100,9 +102,11 @@ class SynchronousQueueMS<E> : SynchronousQueue<E> {
                     continue
                 }
                 val element = next.data.get() ?: continue
+                val succ = next.data.compareAndSet(element, null)
                 head.compareAndSet(curHead, next)
-                if (next.data.compareAndSet(element, null)) {
-                    next.cont!!.resume(true)
+                if (succ) {
+                    assert(next.type != NodeType.GETTER)
+                    next.cont.get()!!.resume(true)
                     return element
                 }
             }
